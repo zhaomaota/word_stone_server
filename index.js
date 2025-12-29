@@ -2,9 +2,29 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+require('dotenv').config();
+
+// 导入路由
+const authRoutes = require('./src/routes/auth');
+const usersRoutes = require('./src/routes/users');
+const adminRoutes = require('./src/routes/admin');
+const packsRoutes = require('./src/routes/packs');
+const wordsRoutes = require('./src/routes/words');
+const prisma = require('./src/db/prisma');
 
 const app = express();
+
+// 中间件
 app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+// API 路由
+app.use('/api/auth', authRoutes);
+app.use('/api/users', usersRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/packs', packsRoutes);
+app.use('/api/words', wordsRoutes);
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -30,27 +50,46 @@ const userLastRoseTime = new Map();
 io.on('connection', (socket) => {
   console.log('用户连接:', socket.id);
 
-  socket.on('join', ({ username, inventory }) => {
-    // 初始化用户数据，包含总鲜花数
-    users.set(socket.id, { 
-      username, 
-      inventory,
-      totalRoses: 0  // 初始化总鲜花数
-    });
-    
-    // 发送用户列表更新（包含鲜花数）
-    io.emit('users-update', Array.from(users.entries()).map(([id, data]) => ({
-      id,
-      username: data.username,
-      vocabCount: Object.keys(data.inventory).length,
-      roses: data.totalRoses || 0  // 添加鲜花数
-    })));
+  socket.on('join', async ({ username, inventory }) => {
+    try {
+      // 从数据库查询用户信息
+      const user = await prisma.user.findUnique({
+        where: { username },
+        select: { id: true, totalRoses: true, nickname: true }
+      });
 
-    io.emit('message', {
-      type: 'sys',
-      content: `> [${username}] 已连接到服务器。`,
-      timestamp: Date.now()
-    });
+      // 初始化用户数据，包含从数据库加载的总鲜花数
+      users.set(socket.id, { 
+        username,
+        userId: user?.id,
+        nickname: user?.nickname || null,  // 加载昵称
+        inventory,
+        totalRoses: user?.totalRoses || 0  // 从数据库加载鲜花数
+      });
+      
+      // 发送用户列表更新（包含鲜花数）
+      io.emit('users-update', Array.from(users.entries()).map(([id, data]) => ({
+        id,
+        username: data.username,
+        nickname: data.nickname || null,
+        vocabCount: Object.keys(data.inventory).length,
+        roses: data.totalRoses || 0  // 添加鲜花数
+      })));
+
+      io.emit('message', {
+        type: 'sys',
+        content: `> [${username}] 已连接到服务器。`,
+        timestamp: Date.now()
+      });
+    } catch (error) {
+      console.error('用户加入错误:', error);
+      // 即使数据库查询失败，也允许用户连接
+      users.set(socket.id, { 
+        username, 
+        inventory,
+        totalRoses: 0
+      });
+    }
   });
 
   socket.on('send-message', ({ html, tokens }) => {
@@ -80,6 +119,7 @@ io.on('connection', (socket) => {
       id: messageId,
       type: 'user',
       username: user.username,
+      nickname: user.nickname || null,  // 包含昵称
       content: html,
       roses: 0,  // 初始鲜花数为0
       timestamp: Date.now()
@@ -100,7 +140,7 @@ io.on('connection', (socket) => {
   });
 
   // 🌹 送花功能
-socket.on('send-rose', ({ targetUsername, messageId }) => {
+socket.on('send-rose', async ({ targetUsername, messageId }) => {
   const sender = users.get(socket.id);
   if (!sender) {
     socket.emit('error', { message: '用户未登录' });
@@ -163,6 +203,18 @@ socket.on('send-rose', ({ targetUsername, messageId }) => {
     action = 'added';
   }
 
+  // 更新数据库中的鲜花数
+  try {
+    if (receiver.userId) {
+      await prisma.user.update({
+        where: { id: receiver.userId },
+        data: { totalRoses: receiver.totalRoses }
+      });
+    }
+  } catch (error) {
+    console.error('更新数据库鲜花数失败:', error);
+  }
+
   // 广播更新（明确字段：messageId, roses, totalRoses, sender, receiver, action）
   io.emit('rose-update', {
     messageId,
@@ -177,6 +229,7 @@ socket.on('send-rose', ({ targetUsername, messageId }) => {
   io.emit('users-update', Array.from(users.entries()).map(([id, data]) => ({
     id,
     username: data.username,
+    nickname: data.nickname || null,
     vocabCount: Object.keys(data.inventory || {}).length,
     roses: data.totalRoses || 0
   })));
@@ -190,6 +243,7 @@ socket.on('send-rose', ({ targetUsername, messageId }) => {
       io.emit('users-update', Array.from(users.entries()).map(([id, data]) => ({
         id,
         username: data.username,
+        nickname: data.nickname || null,
         vocabCount: Object.keys(data.inventory).length,
         roses: data.totalRoses || 0  // 保留鲜花数
       })));
@@ -209,6 +263,7 @@ socket.on('send-rose', ({ targetUsername, messageId }) => {
       io.emit('users-update', Array.from(users.entries()).map(([id, data]) => ({
         id,
         username: data.username,
+        nickname: data.nickname || null,
         vocabCount: Object.keys(data.inventory).length,
         roses: data.totalRoses || 0
       })));
@@ -228,8 +283,9 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`🚀 服务器运行在 http://localhost:${PORT}`);
   console.log(`🌹 送花功能已启用`);
+  console.log(`📡 API 端点: http://localhost:${PORT}/api`);
 });

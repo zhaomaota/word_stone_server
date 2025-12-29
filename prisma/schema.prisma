@@ -1,0 +1,252 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+enum Rarity {
+  COMMON
+  RARE
+  EPIC
+  LEGENDARY
+}
+
+enum PartOfSpeech {
+  NOUN
+  VERB
+  ADJECTIVE
+  ADVERB
+  PRONOUN
+  PREPOSITION
+  CONJUNCTION
+  INTERJECTION
+  OTHER
+}
+
+// 1. 用户表
+model User {
+  id                String    @id @default(uuid())
+  username          String    @unique
+  passwordHash      String
+  role              UserRole  @default(USER)
+  totalRoses        Int       @default(0)
+  totalPacks        Int       @default(0)
+  consecutiveDays   Int       @default(0)
+  onlineMinutes     Int       @default(0)
+  inviteCode        String    @unique
+  invitedById       String?
+  invitedBy         User?     @relation("UserInvites", fields: [invitedById], references: [id])
+  invitedUsers      User[]    @relation("UserInvites")
+  registeredAt      DateTime  @default(now())
+  lastLoginAt       DateTime?
+  lastSignInAt      DateTime?
+  level             Int       @default(1)
+  isBanned          Boolean   @default(false)
+  avatar            String?
+  nickname          String?
+  lastUsernameChange DateTime?
+  lastNicknameChange DateTime?
+  
+  // Relations
+  userWords         UserWord[]
+  userPacks         UserPack[]
+  messages          Message[]
+  roseSenders       RoseSender[]
+  userCollections   UserCollection[]
+  userAchievements  UserAchievement[]
+  loginRewards      LoginReward[]
+
+  @@map("users")
+}
+
+// 2. 单词表
+model Word {
+  id           String        @id @default(uuid())
+  word         String        @unique
+  definition   String
+  rarity       Rarity
+  pronunciation String?
+  variants     String[]
+  partOfSpeech PartOfSpeech
+  createdAt    DateTime      @default(now())
+  
+  // Relations
+  userWords    UserWord[]
+  wordCollections WordCollection[]
+
+  @@map("words")
+}
+
+// 3. 用户单词库存表
+model UserWord {
+  userId      String
+  wordId      String
+  isFavorited Boolean  @default(false)
+  obtainedAt  DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word        Word     @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@id([userId, wordId])
+  @@map("user_words")
+}
+
+// 4. 卡包表
+model Pack {
+  id          String    @id @default(uuid())
+  name        String
+  description String
+  cardCount   Int
+  weights     Json      // {"common": 70, "rare": 20, "epic": 8, "legendary": 2}
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  
+  // Relations
+  userPacks   UserPack[]
+
+  @@map("packs")
+}
+
+// 5. 用户卡包库存表
+model UserPack {
+  userId  String
+  packId  String
+  count   Int    @default(0)
+  
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pack    Pack   @relation(fields: [packId], references: [id], onDelete: Cascade)
+
+  @@id([userId, packId])
+  @@map("user_packs")
+}
+
+// 6. 消息表
+model Message {
+  id          String       @id @default(uuid())
+  userId      String
+  content     String
+  roses       Int          @default(0)
+  timestamp   DateTime     @default(now())
+  replyToId   String?
+  
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replyTo     Message?     @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies     Message[]    @relation("MessageReplies")
+  roseSenders RoseSender[]
+
+  @@index([timestamp])
+  @@map("messages")
+}
+
+// 7. 送花记录表
+model RoseSender {
+  messageId String
+  userId    String
+  sentAt    DateTime @default(now())
+  
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@map("rose_senders")
+}
+
+// 8. 图鉴表
+model Collection {
+  id          String    @id @default(uuid())
+  name        String
+  description String
+  icon        String?
+  rewardRoses Int
+  createdAt   DateTime  @default(now())
+  
+  // Relations
+  wordCollections  WordCollection[]
+  userCollections  UserCollection[]
+
+  @@map("collections")
+}
+
+// 9. 图鉴单词关联表
+model WordCollection {
+  collectionId String
+  wordId       String
+  
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  word         Word       @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@id([collectionId, wordId])
+  @@map("word_collections")
+}
+
+// 10. 用户图鉴完成记录表
+model UserCollection {
+  userId       String
+  collectionId String
+  completedAt  DateTime @default(now())
+  
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, collectionId])
+  @@map("user_collections")
+}
+
+// 11. 成就表
+model Achievement {
+  id            String    @id @default(uuid())
+  name          String
+  description   String
+  icon          String?
+  category      String
+  isHidden      Boolean   @default(false)
+  conditionType String
+  conditionValue Int
+  rewardRoses   Int
+  rewardPacks   Json?     // [{"packId": "xxx", "count": 1}]
+  createdAt     DateTime  @default(now())
+  
+  // Relations
+  userAchievements UserAchievement[]
+
+  @@map("achievements")
+}
+
+// 12. 用户成就记录表
+model UserAchievement {
+  userId        String
+  achievementId String
+  unlockedAt    DateTime @default(now())
+  
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@id([userId, achievementId])
+  @@map("user_achievements")
+}
+
+// 13. 签到奖励记录表
+model LoginReward {
+  id           String   @id @default(uuid())
+  userId       String
+  day          Int
+  rewardRoses  Int
+  rewardPacks  Json?    // [{"packId": "xxx", "count": 1}]
+  claimedAt    DateTime @default(now())
+  
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("login_rewards")
+}
